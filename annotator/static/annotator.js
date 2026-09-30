@@ -13,11 +13,43 @@
 // or snap sensitivity by editing this object only; nothing below should
 // contain a hardcoded color, size, or threshold.
 // ----------------------------------------------------------------------------
+// const CONFIG = {
+//     colors: {
+//         edge: "#43c6ff",
+//         edgeSelected: "#ff5050",
+//         node: "#43c6ff",
+//         chainPreview: "#ffd24d",
+//         snapRing: "#ffd24d",
+//         alignGuide: "#ff50c8",
+//     },
+//     sizes: {
+//         edgeWidth: 5,
+//         edgeWidthSelected: 6,
+//         nodeRadius: 7,
+//         snapRingRadius: 16,
+//         snapRingWidth: 4,
+//         chainPreviewWidth: 4,
+//         alignGuideWidth: 2,
+//         alignedNodeRingRadius: 14,   // highlight ring drawn around a node the guide line is aligned to
+//         alignedNodeRingWidth: 4,
+//     },
+//     dash: {
+//         chainPreview: [5, 4],
+//         alignGuide: [6, 4],
+//     },
+//     snap: {
+//         radiusScreenPx: 12,     // endpoint/edge snap radius, in screen pixels (divided by zoom)
+//         angleSnapDegrees: 45,   // snap angle to nearest multiple of this, while Shift is held
+//         alignThresholdScreenPx: 10, // how close (in screen px) to another node's x/y counts as "aligned"
+//     },
+// };
+
+
 const CONFIG = {
     colors: {
-        edge: "#43c6ff",
+        edge: "#ff437b",
         edgeSelected: "#ff5050",
-        node: "#43c6ff",
+        node: "#6e0e8b",
         chainPreview: "#ffd24d",
         snapRing: "#ffd24d",
         alignGuide: "#ff50c8",
@@ -25,12 +57,12 @@ const CONFIG = {
     sizes: {
         edgeWidth: 5,
         edgeWidthSelected: 6,
-        nodeRadius: 7,
-        snapRingRadius: 16,
+        nodeRadius: 10.5,
+        snapRingRadius: 24,
         snapRingWidth: 4,
         chainPreviewWidth: 4,
         alignGuideWidth: 2,
-        alignedNodeRingRadius: 14,   // highlight ring drawn around a node the guide line is aligned to
+        alignedNodeRingRadius: 28,   // highlight ring drawn around a node the guide line is aligned to
         alignedNodeRingWidth: 4,
     },
     dash: {
