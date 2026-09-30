@@ -8,6 +8,42 @@
 // extraction on the exported wall graph.
 // ============================================================================
 
+// ----------------------------------------------------------------------------
+// CONFIG -- every visual/behavioral constant lives here. Change appearance
+// or snap sensitivity by editing this object only; nothing below should
+// contain a hardcoded color, size, or threshold.
+// ----------------------------------------------------------------------------
+const CONFIG = {
+    colors: {
+        edge: "#43c6ff",
+        edgeSelected: "#ff5050",
+        node: "#43c6ff",
+        chainPreview: "#ffd24d",
+        snapRing: "#ffd24d",
+        alignGuide: "#ff50c8",
+    },
+    sizes: {
+        edgeWidth: 5,
+        edgeWidthSelected: 6,
+        nodeRadius: 7,
+        snapRingRadius: 16,
+        snapRingWidth: 4,
+        chainPreviewWidth: 4,
+        alignGuideWidth: 2,
+        alignedNodeRingRadius: 14,   // highlight ring drawn around a node the guide line is aligned to
+        alignedNodeRingWidth: 4,
+    },
+    dash: {
+        chainPreview: [5, 4],
+        alignGuide: [6, 4],
+    },
+    snap: {
+        radiusScreenPx: 12,     // endpoint/edge snap radius, in screen pixels (divided by zoom)
+        angleSnapDegrees: 45,   // snap angle to nearest multiple of this, while Shift is held
+        alignThresholdScreenPx: 10, // how close (in screen px) to another node's x/y counts as "aligned"
+    },
+};
+
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
@@ -31,18 +67,18 @@ const state = {
     // interaction
     mode: "idle",          // "idle" | "drawing"
     drawChain: [],         // node IDs committed so far in the current polyline chain
-    hoverPoint: null,      // {x,y, snappedNodeId?, snappedEdge?} in IMAGE space -- the "next click" preview point
+    hoverPoint: null,      // {x,y, snapType?} in IMAGE space -- the "next click" preview point
     selectedEdgeIndex: -1,
-    angleSnapHeld: false,
-    draggingNodeId: null,  // New dragging state
+    angleSnapHeld: false,  // Shift key -- used both while drawing a chain and while dragging a node
+
+    draggingNodeId: null,
+    dragOriginalPos: null, // {x, y} of the node BEFORE the current drag started, for Shift axis-lock
+    activeGuides: null,    // {x: number|null, y: number|null} -- alignment guide lines to render, in IMAGE space
 
     dirty: false,          // unsaved changes since last save
     undoStack: [],
     redoStack: [],
 };
-
-const SNAP_RADIUS_SCREEN_PX = 12;   // endpoint/edge snap radius, in screen pixels (divided by zoom)
-const ANGLE_SNAP_DEGREES = 45;      // snap in-progress line angle to nearest multiple of this
 
 // ----------------------------------------------------------------------------
 // Coordinate transforms
@@ -57,7 +93,11 @@ function screenToImage(x, y) {
 }
 
 function snapRadiusInImageSpace() {
-    return SNAP_RADIUS_SCREEN_PX / state.zoom;
+    return CONFIG.snap.radiusScreenPx / state.zoom;
+}
+
+function alignThresholdInImageSpace() {
+    return CONFIG.snap.alignThresholdScreenPx / state.zoom;
 }
 
 // ----------------------------------------------------------------------------
@@ -107,14 +147,9 @@ function redo() {
 // ----------------------------------------------------------------------------
 
 function deleteNode(nodeId) {
-    // Remove the node and any connected edges
+    // Remove the node and any connected edges (cascade delete).
     state.nodes = state.nodes.filter(n => n.id !== nodeId);
     state.edges = state.edges.filter(e => e.a !== nodeId && e.b !== nodeId);
-
-    // Clean up any other nodes that are now orphaned
-    const referenced = new Set();
-    state.edges.forEach(e => { referenced.add(e.a); referenced.add(e.b); });
-    state.nodes = state.nodes.filter(n => referenced.has(n.id));
 }
 
 function addNode(x, y) {
@@ -147,7 +182,7 @@ function deleteEdgeAt(index) {
 }
 
 // ----------------------------------------------------------------------------
-// Snapping
+// Snapping: corner/T-junction snap (existing geometry)
 // ----------------------------------------------------------------------------
 
 // Returns the best snap target near an image-space point (px, py), or null.
@@ -155,7 +190,6 @@ function deleteEdgeAt(index) {
 function findSnapTarget(px, py, excludeNodeId) {
     const radius = snapRadiusInImageSpace();
 
-    // 1. endpoint snap
     let best = null;
     let bestDist = radius;
     for (const n of state.nodes) {
@@ -168,14 +202,13 @@ function findSnapTarget(px, py, excludeNodeId) {
     }
     if (best) return best;
 
-    // 2. edge projection snap (T-junction onto interior of an existing wall)
     let bestEdge = null;
     let bestEdgeDist = radius;
     for (const e of state.edges) {
         const a = getNode(e.a), b = getNode(e.b);
         if (!a || !b) continue;
         const proj = projectPointOntoSegment(px, py, a.x, a.y, b.x, b.y);
-        if (proj.t > 0.02 && proj.t < 0.98) { // interior only, not near the edge's own endpoints
+        if (proj.t > 0.02 && proj.t < 0.98) {
             const d = Math.hypot(proj.x - px, proj.y - py);
             if (d < bestEdgeDist) {
                 bestEdgeDist = d;
@@ -195,14 +228,61 @@ function projectPointOntoSegment(px, py, ax, ay, bx, by) {
     return { x: ax + t * dx, y: ay + t * dy, t };
 }
 
-// Given a fixed start point and a raw target point, optionally snap the
-// angle between them to the nearest multiple of ANGLE_SNAP_DEGREES.
+// ----------------------------------------------------------------------------
+// Snapping: alignment guides (align to another node's x or y coordinate)
+// ----------------------------------------------------------------------------
+
+// Looks at every node except excludeNodeId, and finds the closest match (if
+// any, within the alignment threshold) on the x axis and on the y axis
+// independently. Returns the snapped point, the guide coordinate for each
+// axis, AND the id of every node that actually sits on that guide line --
+// so the caller can highlight each one (e.g. in a square, both the top-left
+// and bottom-left nodes share the same x, and both should light up).
+function findAlignmentSnap(px, py, excludeNodeId) {
+    const threshold = alignThresholdInImageSpace();
+
+    let bestX = null, bestXDist = threshold;
+    let bestY = null, bestYDist = threshold;
+
+    for (const n of state.nodes) {
+        if (n.id === excludeNodeId) continue;
+        const dx = Math.abs(n.x - px);
+        if (dx < bestXDist) { bestXDist = dx; bestX = n.x; }
+        const dy = Math.abs(n.y - py);
+        if (dy < bestYDist) { bestYDist = dy; bestY = n.y; }
+    }
+
+    // second pass: now that we know the snapped x/y values, collect every
+    // node (excluding the dragged one) that sits on those exact lines --
+    // there may be more than one node sharing a coordinate.
+    const alignedNodeIdsX = [];
+    const alignedNodeIdsY = [];
+    if (bestX !== null || bestY !== null) {
+        for (const n of state.nodes) {
+            if (n.id === excludeNodeId) continue;
+            if (bestX !== null && Math.abs(n.x - bestX) < 1e-6) alignedNodeIdsX.push(n.id);
+            if (bestY !== null && Math.abs(n.y - bestY) < 1e-6) alignedNodeIdsY.push(n.id);
+        }
+    }
+
+    return {
+        x: bestX !== null ? bestX : px,
+        y: bestY !== null ? bestY : py,
+        guideX: bestX,   // the x-coordinate to draw a vertical guide line at, or null
+        guideY: bestY,   // the y-coordinate to draw a horizontal guide line at, or null
+        alignedNodeIdsX, // every node id that sits exactly on the x guide line
+        alignedNodeIdsY, // every node id that sits exactly on the y guide line
+    };
+}
+
+// Given a fixed start point and a raw target point, snap the angle between
+// them to the nearest multiple of angleSnapDegrees, preserving distance.
 function applyAngleSnap(startX, startY, targetX, targetY) {
     const dx = targetX - startX, dy = targetY - startY;
     const dist = Math.hypot(dx, dy);
     if (dist === 0) return { x: targetX, y: targetY };
     const angle = Math.atan2(dy, dx);
-    const step = (ANGLE_SNAP_DEGREES * Math.PI) / 180;
+    const step = (CONFIG.snap.angleSnapDegrees * Math.PI) / 180;
     const snappedAngle = Math.round(angle / step) * step;
     return {
         x: startX + Math.cos(snappedAngle) * dist,
@@ -211,15 +291,13 @@ function applyAngleSnap(startX, startY, targetX, targetY) {
 }
 
 // Resolve a snap target into an actual node ID, creating a new node if the
-// target is a raw point, a fresh click, or the interior of an edge (which
-// requires splitting that edge into two).
+// target is a raw point, or splitting an existing edge if the target is its
+// interior (T-junction).
 function resolveToNodeId(px, py, snapTarget) {
     if (snapTarget && snapTarget.type === "node") {
         return snapTarget.nodeId;
     }
     if (snapTarget && snapTarget.type === "edge") {
-        // split the edge: remove it, add a new node at the projection point,
-        // reconnect both halves to the new node
         const edge = state.edges[snapTarget.edgeIndex];
         const a = edge.a, b = edge.b;
         state.edges.splice(snapTarget.edgeIndex, 1);
@@ -228,7 +306,6 @@ function resolveToNodeId(px, py, snapTarget) {
         addEdge(b, newNode.id);
         return newNode.id;
     }
-    // no snap -- brand new free point
     const newNode = addNode(px, py);
     return newNode.id;
 }
@@ -266,6 +343,51 @@ function render() {
         );
     }
 
+    // alignment guide lines (drawn under the geometry, full-canvas dashed lines)
+    if (state.activeGuides) {
+        ctx.save();
+        ctx.strokeStyle = CONFIG.colors.alignGuide;
+        ctx.lineWidth = CONFIG.sizes.alignGuideWidth;
+        ctx.setLineDash(CONFIG.dash.alignGuide);
+        if (state.activeGuides.x !== null) {
+            const sx = imageToScreen(state.activeGuides.x, 0).x;
+            ctx.beginPath();
+            ctx.moveTo(sx, 0);
+            ctx.lineTo(sx, canvas.height);
+            ctx.stroke();
+        }
+        if (state.activeGuides.y !== null) {
+            const sy = imageToScreen(0, state.activeGuides.y).y;
+            ctx.beginPath();
+            ctx.moveTo(0, sy);
+            ctx.lineTo(canvas.width, sy);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        // highlight every node the guide line actually passes through, so it's
+        // unambiguous WHICH node(s) the current drag is aligned to
+        const highlightedIds = new Set([
+            ...(state.activeGuides.nodeIdsX || []),
+            ...(state.activeGuides.nodeIdsY || []),
+        ]);
+        if (highlightedIds.size > 0) {
+            ctx.save();
+            ctx.strokeStyle = CONFIG.colors.alignGuide;
+            ctx.lineWidth = CONFIG.sizes.alignedNodeRingWidth;
+            ctx.setLineDash([]);
+            highlightedIds.forEach(id => {
+                const n = getNode(id);
+                if (!n) return;
+                const p = imageToScreen(n.x, n.y);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, CONFIG.sizes.alignedNodeRingRadius, 0, Math.PI * 2);
+                ctx.stroke();
+            });
+            ctx.restore();
+        }
+    }
+
     // committed edges
     state.edges.forEach((e, idx) => {
         const a = getNode(e.a), b = getNode(e.b);
@@ -274,8 +396,8 @@ function render() {
         ctx.beginPath();
         ctx.moveTo(pa.x, pa.y);
         ctx.lineTo(pb.x, pb.y);
-        ctx.strokeStyle = idx === state.selectedEdgeIndex ? "#ff5050" : "#43c6ff";
-        ctx.lineWidth = idx === state.selectedEdgeIndex ? 10 : 8.5;
+        ctx.strokeStyle = idx === state.selectedEdgeIndex ? CONFIG.colors.edgeSelected : CONFIG.colors.edge;
+        ctx.lineWidth = idx === state.selectedEdgeIndex ? CONFIG.sizes.edgeWidthSelected : CONFIG.sizes.edgeWidth;
         ctx.stroke();
     });
 
@@ -283,8 +405,8 @@ function render() {
     state.nodes.forEach(n => {
         const p = imageToScreen(n.x, n.y);
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 9.5, 0, Math.PI * 2);
-        ctx.fillStyle = "#43c6ff";
+        ctx.arc(p.x, p.y, CONFIG.sizes.nodeRadius, 0, Math.PI * 2);
+        ctx.fillStyle = CONFIG.colors.node;
         ctx.fill();
     });
 
@@ -297,21 +419,21 @@ function render() {
             ctx.beginPath();
             ctx.moveTo(pa.x, pa.y);
             ctx.lineTo(pb.x, pb.y);
-            ctx.strokeStyle = "#ffd24d";
-            ctx.lineWidth = 2;
-            ctx.setLineDash([5, 4]);
+            ctx.strokeStyle = CONFIG.colors.chainPreview;
+            ctx.lineWidth = CONFIG.sizes.chainPreviewWidth;
+            ctx.setLineDash(CONFIG.dash.chainPreview);
             ctx.stroke();
             ctx.setLineDash([]);
         }
     }
 
-    // snap indicator (highlight ring at hover point if it snapped to something)
+    // snap indicator (highlight ring at hover point if it snapped to existing geometry)
     if (state.hoverPoint && state.hoverPoint.snapType) {
         const p = imageToScreen(state.hoverPoint.x, state.hoverPoint.y);
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 12.5, 0, Math.PI * 2);
-        ctx.strokeStyle = "#ffd24d";
-        ctx.lineWidth = 5;
+        ctx.arc(p.x, p.y, CONFIG.sizes.snapRingRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = CONFIG.colors.snapRing;
+        ctx.lineWidth = CONFIG.sizes.snapRingWidth;
         ctx.stroke();
     }
 }
@@ -331,18 +453,43 @@ canvas.addEventListener("mousemove", evt => {
     if (!state.image) return;
     const raw = getMouseImagePoint(evt);
 
-    // If we are actively holding Ctrl and dragging a node, update its position directly
+    // --- actively dragging a node (Ctrl+drag) ---
     if (state.draggingNodeId !== null) {
         const node = getNode(state.draggingNodeId);
-        if (node) {
-            node.x = raw.x;
-            node.y = raw.y;
-            markDirty();
-            render();
+        if (!node) return;
+
+        let px = raw.x, py = raw.y;
+        state.activeGuides = null;
+
+        if (state.angleSnapHeld && state.dragOriginalPos) {
+            // Shift: constrain movement direction to the nearest 45deg from where
+            // the node started, same mental model as Shift while drawing a chain.
+            const snapped = applyAngleSnap(state.dragOriginalPos.x, state.dragOriginalPos.y, raw.x, raw.y);
+            px = snapped.x;
+            py = snapped.y;
+        } else {
+            // no angle-lock requested: offer alignment-guide snapping to other nodes
+            const align = findAlignmentSnap(raw.x, raw.y, node.id);
+            px = align.x;
+            py = align.y;
+            if (align.guideX !== null || align.guideY !== null) {
+                state.activeGuides = {
+                    x: align.guideX,
+                    y: align.guideY,
+                    nodeIdsX: align.alignedNodeIdsX,
+                    nodeIdsY: align.alignedNodeIdsY,
+                };
+            }
         }
-        return; // Skip normal hover logic
+
+        node.x = px;
+        node.y = py;
+        markDirty();
+        render();
+        return; // skip normal hover/snap-preview logic while dragging
     }
 
+    // --- normal hover (drawing mode or idle) ---
     const excludeId =
         state.mode === "drawing" && state.drawChain.length > 0
             ? state.drawChain[state.drawChain.length - 1]
@@ -351,12 +498,26 @@ canvas.addEventListener("mousemove", evt => {
 
     let px = snap ? snap.x : raw.x;
     let py = snap ? snap.y : raw.y;
+    state.activeGuides = null;
 
     if (state.mode === "drawing" && state.angleSnapHeld && !snap && state.drawChain.length > 0) {
         const start = getNode(state.drawChain[state.drawChain.length - 1]);
         const snapped = applyAngleSnap(start.x, start.y, raw.x, raw.y);
         px = snapped.x;
         py = snapped.y;
+    } else if (!snap) {
+        // also offer alignment guides while placing a fresh point (not just dragging)
+        const align = findAlignmentSnap(raw.x, raw.y, excludeId);
+        if (align.guideX !== null || align.guideY !== null) {
+            px = align.x;
+            py = align.y;
+            state.activeGuides = {
+                x: align.guideX,
+                y: align.guideY,
+                nodeIdsX: align.alignedNodeIdsX,
+                nodeIdsY: align.alignedNodeIdsY,
+            };
+        }
     }
 
     state.hoverPoint = { x: px, y: py, snapType: snap ? snap.type : null };
@@ -364,13 +525,12 @@ canvas.addEventListener("mousemove", evt => {
 });
 
 canvas.addEventListener("click", evt => {
-    // Add this line to prevent drawing when holding modifiers
     if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
 
     if (!state.image) return;
     if (!state.hoverPoint) return;
 
-    const { x, y, snapType } = state.hoverPoint;
+    const { x, y } = state.hoverPoint;
 
     const excludeId =
         state.mode === "drawing" && state.drawChain.length > 0
@@ -379,7 +539,6 @@ canvas.addEventListener("click", evt => {
     const snap = findSnapTarget(x, y, excludeId);
 
     if (state.mode !== "drawing") {
-        // start a new chain
         pushUndo();
         const nodeId = resolveToNodeId(x, y, snap);
         state.drawChain = [nodeId];
@@ -389,7 +548,6 @@ canvas.addEventListener("click", evt => {
         return;
     }
 
-    // continue the chain: commit an edge from the last chain node to this point
     const lastId = state.drawChain[state.drawChain.length - 1];
     pushUndo();
     const nodeId = resolveToNodeId(x, y, snap);
@@ -415,12 +573,10 @@ function endDrawing() {
     render();
 }
 
-// edge selection (click while idle and not starting a new chain --
-// handled via a modifier to avoid ambiguity: Alt+Click selects/deletes)
 canvas.addEventListener("mousedown", evt => {
     if (!state.image) return;
 
-    // Ctrl + Left Click: Initialize Node Dragging
+    // Ctrl + Left Click: start dragging a node
     if ((evt.ctrlKey || evt.metaKey) && evt.button === 0) {
         const raw = getMouseImagePoint(evt);
         const radius = snapRadiusInImageSpace();
@@ -435,16 +591,16 @@ canvas.addEventListener("mousedown", evt => {
         if (bestNode) {
             pushUndo();
             state.draggingNodeId = bestNode.id;
+            state.dragOriginalPos = { x: bestNode.x, y: bestNode.y };
         }
         return;
     }
 
-    // Alt + Left Click: Delete Node or Edge
+    // Alt + Left Click: delete node (cascade) or, failing that, an edge
     if (evt.altKey && evt.button === 0) {
         const raw = getMouseImagePoint(evt);
         const radius = snapRadiusInImageSpace();
 
-        // 1. Try to delete a node first
         let bestNode = null;
         let bestNodeDist = radius;
         state.nodes.forEach(n => {
@@ -455,13 +611,12 @@ canvas.addEventListener("mousedown", evt => {
         if (bestNode) {
             pushUndo();
             deleteNode(bestNode.id);
-            endDrawing(); // Exit drawing mode safely if active
+            endDrawing();
             markDirty();
             render();
             return;
         }
 
-        // 2. Fall back to deleting an edge (your original logic)
         let bestIdx = -1, bestDist = radius;
         state.edges.forEach((e, idx) => {
             const a = getNode(e.a), b = getNode(e.b);
@@ -531,7 +686,10 @@ window.addEventListener("mousemove", evt => {
 });
 window.addEventListener("mouseup", () => {
     isPanning = false;
-    state.draggingNodeId = null; // Release the drag
+    state.draggingNodeId = null;
+    state.dragOriginalPos = null;
+    state.activeGuides = null;
+    render();
 });
 
 // ----------------------------------------------------------------------------
@@ -581,9 +739,6 @@ async function saveAnnotation() {
 async function loadDirectory() {
     const dirInput = document.getElementById("dir-input");
     state.dir = dirInput.value.trim();
-    // Note: the actual directory is fixed by the server's --dir CLI argument;
-    // this field is kept for display/reference. The backend's /api/images
-    // always reflects the directory the server was started with.
     const res = await fetch("/api/images");
     if (!res.ok) {
         alert("Failed to list images: " + (await res.text()));
@@ -621,7 +776,6 @@ async function goToImage(index) {
     const filename = state.images[index].filename;
     document.getElementById("current-filename").textContent = filename;
 
-    // load image bytes
     const img = new Image();
     await new Promise((resolve, reject) => {
         img.onload = resolve;
@@ -632,7 +786,6 @@ async function goToImage(index) {
     state.imageWidth = img.naturalWidth;
     state.imageHeight = img.naturalHeight;
 
-    // load annotation graph
     const annRes = await fetch(`/api/annotation/${encodeURIComponent(filename)}`);
     const ann = await annRes.json();
     state.nodes = ann.nodes || [];
@@ -682,5 +835,4 @@ window.addEventListener("resize", () => {
 // initial boot
 resizeCanvasToWrap();
 render();
-// auto-load immediately since the server already knows its --dir
 loadDirectory();
