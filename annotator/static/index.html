@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Wall Annotator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div id="toolbar">
+        <div id="file-info">
+            <span id="current-filename">No image loaded</span>
+            <span id="progress-count"></span>
+        </div>
+        <div id="controls">
+            <button id="prev-btn" title="Previous image (,)">&larr; Prev</button>
+            <button id="next-btn" title="Next image (.)">Next &rarr;</button>
+            <span class="divider"></span>
+            <button id="undo-btn" title="Undo (Ctrl+Z)">Undo</button>
+            <button id="redo-btn" title="Redo (Ctrl+Y)">Redo</button>
+            <span class="divider"></span>
+            <button id="save-btn" title="Save (Ctrl+S)">Save</button>
+            <span class="divider"></span>
+            <!-- Feature 3: Clear All Annotations -->
+            <button id="clear-btn" title="Clear all annotations">Clear All</button>
+            <span class="divider"></span>
+            <label class="chk"><input type="checkbox" id="angle-snap-toggle"> Angle snap (Shift)</label>
+            <span id="save-status"></span>
+        </div>
+    </div>
+
+    <div id="main">
+        <div id="sidebar">
+            <div id="dir-picker">
+                <input type="text" id="dir-input" placeholder="/path/to/images">
+                <button id="load-dir-btn">Load</button>
+            </div>
+            <div id="image-list"></div>
+        </div>
+
+        <div id="canvas-wrap">
+            <canvas id="canvas"></canvas>
+        </div>
+    </div>
+
+    <script src="annotator.js"></script>
+</body>
+
+</html>

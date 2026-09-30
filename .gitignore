@@ -1,0 +1,14 @@
+data/raw/
+data/chithiram_export/
+checkpoints/
+logs/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+
+**venv**
+
+.venv/*
+data
+**/data/**

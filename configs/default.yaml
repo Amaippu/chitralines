@@ -1,0 +1,22 @@
+model:
+  num_queries: 150
+  hidden_dim: 256
+  nheads: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  pretrained_backbone: true
+
+loss:
+  endpoint_weight: 5.0
+  angle_weight: 2.0
+  conf_weight: 1.0
+
+train:
+  batch_size: 8
+  lr: 1.0e-4
+  epochs: 100
+  num_workers: 4
+
+data:
+  image_size: 512
+  splits_dir: data/splits
