@@ -65,6 +65,23 @@ button:disabled {
     cursor: default;
 }
 
+button.btn-danger {
+    background: #4a1f1f;
+    color: #ff8080;
+    border-color: #7a2f2f;
+}
+
+button.btn-danger:not(:disabled):hover {
+    background: #6a2020;
+    color: #ffaaaa;
+    border-color: #c04040;
+    box-shadow: 0 0 6px rgba(255, 80, 80, 0.35);
+}
+
+button.btn-danger:disabled {
+    opacity: 0.35;
+}
+
 .divider {
     width: 1px;
     height: 22px;
