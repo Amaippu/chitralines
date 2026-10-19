@@ -100,7 +100,8 @@ const state = {
     mode: "idle",          // "idle" | "drawing"
     drawChain: [],         // node IDs committed so far in the current polyline chain
     hoverPoint: null,      // {x,y, snapType?} in IMAGE space -- the "next click" preview point
-    selectedEdgeIndex: -1,
+    selectedEdgeIndex: -1, // index of the currently selected edge (-1 = none)
+    selectedNodeId: null,  // id of the currently selected node (null = none)
     angleSnapHeld: false,  // Shift key -- used both while drawing a chain and while dragging a node
 
     draggingNodeId: null,
@@ -436,9 +437,18 @@ function render() {
     // nodes (corners/junctions)
     state.nodes.forEach(n => {
         const p = imageToScreen(n.x, n.y);
+        const isSelected = n.id === state.selectedNodeId;
+        // draw selection ring behind the node
+        if (isSelected) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, CONFIG.sizes.nodeRadius + 6, 0, Math.PI * 2);
+            ctx.strokeStyle = CONFIG.colors.edgeSelected;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
         ctx.beginPath();
         ctx.arc(p.x, p.y, CONFIG.sizes.nodeRadius, 0, Math.PI * 2);
-        ctx.fillStyle = CONFIG.colors.node;
+        ctx.fillStyle = isSelected ? CONFIG.colors.edgeSelected : CONFIG.colors.node;
         ctx.fill();
     });
 
@@ -571,6 +581,57 @@ canvas.addEventListener("click", evt => {
     const snap = findSnapTarget(x, y, excludeId);
 
     if (state.mode !== "drawing") {
+        // --- try to SELECT an existing node or edge first ---
+        const radius = snapRadiusInImageSpace();
+
+        // 1. check if we clicked near a node
+        let hitNode = null, bestNodeDist = radius;
+        state.nodes.forEach(n => {
+            const d = Math.hypot(n.x - x, n.y - y);
+            if (d < bestNodeDist) { bestNodeDist = d; hitNode = n; }
+        });
+        if (hitNode) {
+            // toggle: clicking the already-selected node deselects
+            if (state.selectedNodeId === hitNode.id) {
+                clearSelection();
+            } else {
+                clearSelection();
+                state.selectedNodeId = hitNode.id;
+                updateDeleteBtn();
+            }
+            render();
+            return;
+        }
+
+        // 2. check if we clicked near an edge
+        let hitEdgeIdx = -1, bestEdgeDist = radius;
+        state.edges.forEach((e, idx) => {
+            const a = getNode(e.a), b = getNode(e.b);
+            if (!a || !b) return;
+            const proj = projectPointOntoSegment(x, y, a.x, a.y, b.x, b.y);
+            const d = Math.hypot(proj.x - x, proj.y - y);
+            if (d < bestEdgeDist) { bestEdgeDist = d; hitEdgeIdx = idx; }
+        });
+        if (hitEdgeIdx >= 0) {
+            if (state.selectedEdgeIndex === hitEdgeIdx) {
+                clearSelection();
+            } else {
+                clearSelection();
+                state.selectedEdgeIndex = hitEdgeIdx;
+                updateDeleteBtn();
+            }
+            render();
+            return;
+        }
+
+        // 3. clicked on empty space → clear selection OR start drawing
+        if (state.selectedEdgeIndex >= 0 || state.selectedNodeId !== null) {
+            clearSelection();
+            render();
+            return;
+        }
+
+        // nothing selected, start drawing
         pushUndo();
         const nodeId = resolveToNodeId(x, y, snap);
         state.drawChain = [nodeId];
@@ -603,6 +664,39 @@ function endDrawing() {
     state.mode = "idle";
     state.drawChain = [];
     render();
+}
+
+function clearSelection() {
+    state.selectedEdgeIndex = -1;
+    state.selectedNodeId = null;
+    updateDeleteBtn();
+}
+
+function updateDeleteBtn() {
+    const btn = document.getElementById("delete-selected-btn");
+    if (!btn) return;
+    const hasSelection = state.selectedEdgeIndex >= 0 || state.selectedNodeId !== null;
+    btn.disabled = !hasSelection;
+}
+
+function deleteSelected() {
+    if (state.selectedNodeId !== null) {
+        pushUndo();
+        deleteNode(state.selectedNodeId);
+        clearSelection();
+        endDrawing();
+        markDirty();
+        render();
+        return;
+    }
+    if (state.selectedEdgeIndex >= 0) {
+        pushUndo();
+        deleteEdgeAt(state.selectedEdgeIndex);
+        clearSelection();
+        endDrawing();
+        markDirty();
+        render();
+    }
 }
 
 canvas.addEventListener("mousedown", evt => {
@@ -692,12 +786,17 @@ let spaceHeld = false;
 window.addEventListener("keydown", evt => {
     if (evt.code === "Space") spaceHeld = true;
     if (evt.key === "Shift") { state.angleSnapHeld = true; }
-    if (evt.key === "Escape") endDrawing();
+    if (evt.key === "Escape") { endDrawing(); clearSelection(); }
     if ((evt.ctrlKey || evt.metaKey) && evt.key === "z") { evt.preventDefault(); undo(); }
     if ((evt.ctrlKey || evt.metaKey) && evt.key === "y") { evt.preventDefault(); redo(); }
     if ((evt.ctrlKey || evt.metaKey) && evt.key === "s") { evt.preventDefault(); saveAnnotation(); }
     if (evt.key === ",") goToImage(state.currentIndex - 1);
     if (evt.key === ".") goToImage(state.currentIndex + 1);
+    // Delete or Backspace: remove the selected annotation
+    if ((evt.key === "Delete" || evt.key === "Backspace") && state.mode !== "drawing") {
+        evt.preventDefault();
+        deleteSelected();
+    }
 });
 window.addEventListener("keyup", evt => {
     if (evt.code === "Space") spaceHeld = false;
@@ -846,6 +945,7 @@ document.getElementById("next-btn").onclick = () => goToImage(state.currentIndex
 document.getElementById("undo-btn").onclick = undo;
 document.getElementById("redo-btn").onclick = redo;
 document.getElementById("save-btn").onclick = saveAnnotation;
+document.getElementById("delete-selected-btn").onclick = deleteSelected;
 document.getElementById("clear-btn").onclick = () => {
     if (state.nodes.length === 0 && state.edges.length === 0) return;
     if (!confirm("Are you sure you want to clear all annotations?")) return;
@@ -854,10 +954,14 @@ document.getElementById("clear-btn").onclick = () => {
     state.nodes = [];
     state.edges = [];
     state.nextNodeId = 0;
+    clearSelection();
     endDrawing();
     markDirty();
     render();
 };
+
+// initialise delete button state
+updateDeleteBtn();
 
 window.addEventListener("resize", () => {
     resizeCanvasToWrap();
