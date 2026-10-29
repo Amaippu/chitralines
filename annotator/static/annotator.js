@@ -183,6 +183,12 @@ function deleteNode(nodeId) {
     // Remove the node and any connected edges (cascade delete).
     state.nodes = state.nodes.filter(n => n.id !== nodeId);
     state.edges = state.edges.filter(e => e.a !== nodeId && e.b !== nodeId);
+    // Remove now-orphaned nodes (formerly connected only to this node,
+    // now unreferenced by any remaining edge). Mirrors the same cleanup
+    // that deleteEdgeAt() already performs.
+    const referenced = new Set();
+    state.edges.forEach(e => { referenced.add(e.a); referenced.add(e.b); });
+    state.nodes = state.nodes.filter(n => referenced.has(n.id));
 }
 
 function addNode(x, y) {
@@ -568,42 +574,39 @@ canvas.addEventListener("mousemove", evt => {
 
 canvas.addEventListener("click", evt => {
     if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
-
     if (!state.image) return;
-    if (!state.hoverPoint) return;
 
-    const { x, y } = state.hoverPoint;
-
+    // Directly compute position from this click event (never rely on stale hoverPoint)
+    const raw = getMouseImagePoint(evt);
     const excludeId =
         state.mode === "drawing" && state.drawChain.length > 0
             ? state.drawChain[state.drawChain.length - 1]
             : undefined;
-    const snap = findSnapTarget(x, y, excludeId);
+    const snap = findSnapTarget(raw.x, raw.y, excludeId);
+    const x = snap ? snap.x : raw.x;
+    const y = snap ? snap.y : raw.y;
+    state.hoverPoint = { x, y, snapType: snap ? snap.type : null };
 
-    if (state.mode !== "drawing") {
-        // --- try to SELECT an existing node or edge first ---
+    // -------------------------------------------------------------------------
+    // SELECT MODE (Tab held): clicks only select/deselect nodes and edges.
+    // -------------------------------------------------------------------------
+    if (tabHeld) {
         const radius = snapRadiusInImageSpace();
 
-        // 1. check if we clicked near a node
+        // 1. node hit?
         let hitNode = null, bestNodeDist = radius;
         state.nodes.forEach(n => {
             const d = Math.hypot(n.x - x, n.y - y);
             if (d < bestNodeDist) { bestNodeDist = d; hitNode = n; }
         });
         if (hitNode) {
-            // toggle: clicking the already-selected node deselects
-            if (state.selectedNodeId === hitNode.id) {
-                clearSelection();
-            } else {
-                clearSelection();
-                state.selectedNodeId = hitNode.id;
-                updateDeleteBtn();
-            }
+            if (state.selectedNodeId === hitNode.id) clearSelection();
+            else { clearSelection(); state.selectedNodeId = hitNode.id; updateDeleteBtn(); }
             render();
             return;
         }
 
-        // 2. check if we clicked near an edge
+        // 2. edge hit?
         let hitEdgeIdx = -1, bestEdgeDist = radius;
         state.edges.forEach((e, idx) => {
             const a = getNode(e.a), b = getNode(e.b);
@@ -613,39 +616,40 @@ canvas.addEventListener("click", evt => {
             if (d < bestEdgeDist) { bestEdgeDist = d; hitEdgeIdx = idx; }
         });
         if (hitEdgeIdx >= 0) {
-            if (state.selectedEdgeIndex === hitEdgeIdx) {
-                clearSelection();
-            } else {
-                clearSelection();
-                state.selectedEdgeIndex = hitEdgeIdx;
-                updateDeleteBtn();
-            }
+            if (state.selectedEdgeIndex === hitEdgeIdx) clearSelection();
+            else { clearSelection(); state.selectedEdgeIndex = hitEdgeIdx; updateDeleteBtn(); }
             render();
             return;
         }
 
-        // 3. clicked on empty space → clear selection OR start drawing
-        if (state.selectedEdgeIndex >= 0 || state.selectedNodeId !== null) {
-            clearSelection();
-            render();
-            return;
-        }
+        // 3. empty space → just clear any selection
+        clearSelection();
+        render();
+        return;
+    }
 
-        // nothing selected, start drawing
+    // -------------------------------------------------------------------------
+    // DRAW MODE (default): every click places a node / extends the chain.
+    // -------------------------------------------------------------------------
+    clearSelection();
+
+    if (state.mode === "drawing") {
+        // Continue the current chain
+        const lastId = state.drawChain[state.drawChain.length - 1];
         pushUndo();
         const nodeId = resolveToNodeId(x, y, snap);
-        state.drawChain = [nodeId];
-        state.mode = "drawing";
+        addEdge(lastId, nodeId);
+        state.drawChain.push(nodeId);
         markDirty();
         render();
         return;
     }
 
-    const lastId = state.drawChain[state.drawChain.length - 1];
+    // Start a new chain
     pushUndo();
     const nodeId = resolveToNodeId(x, y, snap);
-    addEdge(lastId, nodeId);
-    state.drawChain.push(nodeId);
+    state.drawChain = [nodeId];
+    state.mode = "drawing";
     markDirty();
     render();
 });
@@ -679,25 +683,64 @@ function updateDeleteBtn() {
     btn.disabled = !hasSelection;
 }
 
+function updateModeIndicator() {
+    const el = document.getElementById("mode-indicator");
+    if (!el) return;
+    if (tabHeld) {
+        el.textContent = "🔲 Select";
+        el.className = "mode-select";
+        document.body.classList.add("select-mode");
+    } else {
+        el.textContent = "✏️ Draw";
+        el.className = "mode-draw";
+        document.body.classList.remove("select-mode");
+    }
+}
+
+
 function deleteSelected() {
+    let deleted = false;
     if (state.selectedNodeId !== null) {
         pushUndo();
         deleteNode(state.selectedNodeId);
-        clearSelection();
-        endDrawing();
-        markDirty();
-        render();
-        return;
-    }
-    if (state.selectedEdgeIndex >= 0) {
+        deleted = true;
+    } else if (state.selectedEdgeIndex >= 0) {
         pushUndo();
         deleteEdgeAt(state.selectedEdgeIndex);
+        deleted = true;
+    }
+
+    if (deleted) {
         clearSelection();
-        endDrawing();
+        state.mode = "idle";
+        state.drawChain = [];
+        // Seamlessly return to Draw mode so user can immediately draw without delay
+        tabHeld = false;
+        state.hoverPoint = null;
+        state.activeGuides = null;
+        updateModeIndicator();
         markDirty();
         render();
     }
 }
+
+canvas.addEventListener("mouseenter", evt => {
+    if (!state.image) return;
+    const raw = getMouseImagePoint(evt);
+    const excludeId =
+        state.mode === "drawing" && state.drawChain.length > 0
+            ? state.drawChain[state.drawChain.length - 1]
+            : undefined;
+    const snap = findSnapTarget(raw.x, raw.y, excludeId);
+    state.hoverPoint = { x: snap ? snap.x : raw.x, y: snap ? snap.y : raw.y, snapType: snap ? snap.type : null };
+    render();
+});
+
+canvas.addEventListener("mouseleave", () => {
+    state.hoverPoint = null;
+    state.activeGuides = null;
+    render();
+});
 
 canvas.addEventListener("mousedown", evt => {
     if (!state.image) return;
@@ -782,11 +825,28 @@ canvas.addEventListener("wheel", evt => {
 let isPanning = false;
 let panStart = null;
 let spaceHeld = false;
+let tabHeld = false;   // Tab held = select mode; release Tab = back to draw
 
 window.addEventListener("keydown", evt => {
     if (evt.code === "Space") spaceHeld = true;
     if (evt.key === "Shift") { state.angleSnapHeld = true; }
-    if (evt.key === "Escape") { endDrawing(); clearSelection(); }
+    // Tab (held): enter Select mode while key is down
+    if (evt.key === "Tab" || evt.code === "Tab") {
+        evt.preventDefault();
+        if (!tabHeld) {
+            tabHeld = true;
+            updateModeIndicator();
+            render();
+        }
+    }
+    // Esc: exit select mode, clear selection, and return to draw mode
+    if (evt.key === "Escape") {
+        tabHeld = false;
+        clearSelection();
+        endDrawing();
+        updateModeIndicator();
+        render();
+    }
     if ((evt.ctrlKey || evt.metaKey) && evt.key === "z") { evt.preventDefault(); undo(); }
     if ((evt.ctrlKey || evt.metaKey) && evt.key === "y") { evt.preventDefault(); redo(); }
     if ((evt.ctrlKey || evt.metaKey) && evt.key === "s") { evt.preventDefault(); saveAnnotation(); }
@@ -801,6 +861,25 @@ window.addEventListener("keydown", evt => {
 window.addEventListener("keyup", evt => {
     if (evt.code === "Space") spaceHeld = false;
     if (evt.key === "Shift") { state.angleSnapHeld = false; }
+    // Release Tab: exit Select mode, return to Draw mode
+    if (evt.key === "Tab" || evt.code === "Tab") {
+        evt.preventDefault();
+        tabHeld = false;
+        updateModeIndicator();
+        render();
+    }
+});
+
+window.addEventListener("blur", () => {
+    tabHeld = false;
+    spaceHeld = false;
+    if (state) state.angleSnapHeld = false;
+    updateModeIndicator();
+});
+window.addEventListener("focus", () => {
+    tabHeld = false;
+    spaceHeld = false;
+    updateModeIndicator();
 });
 
 canvas.addEventListener("mousedown", evt => {
@@ -960,8 +1039,18 @@ document.getElementById("clear-btn").onclick = () => {
     render();
 };
 
-// initialise delete button state
+// initialise delete button and mode indicator
 updateDeleteBtn();
+const modeInd = document.getElementById("mode-indicator");
+if (modeInd) {
+    modeInd.style.cursor = "pointer";
+    modeInd.onclick = () => {
+        tabHeld = !tabHeld;
+        if (!tabHeld) clearSelection();
+        updateModeIndicator();
+        render();
+    };
+}
 
 window.addEventListener("resize", () => {
     resizeCanvasToWrap();

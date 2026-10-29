@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Wall Annotator</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=5">
 </head>
 
 <body>
@@ -28,6 +28,8 @@
             <button id="clear-btn" title="Clear all annotations">Clear All</button>
             <span class="divider"></span>
             <label class="chk"><input type="checkbox" id="angle-snap-toggle"> Angle snap (Shift)</label>
+            <span class="divider"></span>
+            <span id="mode-indicator" class="mode-draw" title="Tab to toggle Select / Draw mode">✏️ Draw</span>
             <span id="save-status"></span>
         </div>
     </div>
@@ -46,7 +48,7 @@
         </div>
     </div>
 
-    <script src="annotator.js"></script>
+    <script src="annotator.js?v=4"></script>
 </body>
 
 </html>
