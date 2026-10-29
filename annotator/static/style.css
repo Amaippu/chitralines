@@ -198,3 +198,33 @@ button.btn-danger:disabled {
     left: 0;
     cursor: crosshair;
 }
+
+/* Mode indicator badge */
+#mode-indicator {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid;
+    letter-spacing: 0.03em;
+    user-select: none;
+    cursor: pointer;
+    transition: none;
+}
+
+#mode-indicator.mode-draw {
+    background: #1a3a2a;
+    color: #6fcf97;
+    border-color: #2d6e4e;
+}
+
+#mode-indicator.mode-select {
+    background: #2a2a4a;
+    color: #9b8fff;
+    border-color: #4a4a8a;
+}
+
+/* Switch cursor to pointer in select mode */
+body.select-mode #canvas {
+    cursor: default;
+}
